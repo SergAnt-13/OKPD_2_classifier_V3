@@ -1,0 +1,2 @@
+#!/bin/bash
+TOKENIZERS_PARALLELISM=false MKL_NUM_THREADS=1 OMP_NUM_THREADS=1 python3 "$@"
