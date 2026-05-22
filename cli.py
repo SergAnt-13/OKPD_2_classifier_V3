@@ -21,23 +21,18 @@ def cmd_predict_text(args):
     text = args.text
     text_stemmed = cleaner.clean(text, stemmer=stemmer)
 
-    retriever = Retriever(
-        model_name=args.model,
-        index_path=FAISS_DIR / "okpd_index.faiss",
-        id_map_path=FAISS_DIR / "id_map.csv",
-        bm25_path=FAISS_DIR / "bm25_index.pkl",
-    )
+    retriever = Retriever(model_name="BAAI/bge-m3")
     result = retriever.search(text_stemmed, top_k=5)
 
     print(f"Запрос: {text}")
     print(f"После очистки+стемминга: {text_stemmed}\n")
     print("Топ-5 кандидатов:")
     for i, cand in enumerate(result["candidates"], 1):
-        print(f"  {i}. {cand['code']} | {cand['score']:.4f} | {cand['name']}")
+        print(f"  {i}. {cand['code']} | {cand.get('rerank_score', cand['score']):.4f} | {cand['name']}")
 
 
 def cmd_build_index(args):
-    build_faiss_index(model_name=args.model)
+    build_faiss_index(model_name=args.model or "BAAI/bge-m3")
 
 
 def main():
@@ -46,11 +41,11 @@ def main():
 
     pred_text = subparsers.add_parser("predict-text", help="Predict a single product name")
     pred_text.add_argument("text", help="Product name")
-    pred_text.add_argument("--model", default="intfloat/multilingual-e5-large")
+    pred_text.add_argument("--model", default="BAAI/bge-m3")
     pred_text.set_defaults(func=cmd_predict_text)
 
-    build_idx = subparsers.add_parser("build-index", help="Build FAISS and BM25 index")
-    build_idx.add_argument("--model", default="intfloat/multilingual-e5-large")
+    build_idx = subparsers.add_parser("build-index", help="Build FAISS index")
+    build_idx.add_argument("--model", default="BAAI/bge-m3")
     build_idx.set_defaults(func=cmd_build_index)
 
     args = parser.parse_args()

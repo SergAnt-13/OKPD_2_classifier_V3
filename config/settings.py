@@ -10,7 +10,8 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT_DIR / "data"
 RAW_DATA_DIR = DATA_DIR / "uploads"             # uploaded nomenclature files
 REFERENCE_DIR = DATA_DIR / "reference"          # okpd_2.xlsx, abbreviations.xlsx, vat_exempt_codes.xlsx
-OUTPUT_DIR = DATA_DIR / "output"                # versioned results
+OUTPUT_DIR = DATA_DIR / "output"               # versioned results
+TRAINING_DATA_DIR = DATA_DIR / "uploads"
 
 # ----- ARTIFACTS -----
 ARTIFACTS_DIR = ROOT_DIR / "artifacts"
@@ -25,7 +26,7 @@ FRONTEND_DIR = ROOT_DIR / "frontend"
 for directory in [
     RAW_DATA_DIR, REFERENCE_DIR, OUTPUT_DIR,
     MODELS_DIR, FAISS_DIR, LOGS_DIR,
-    FRONTEND_DIR,
+    FRONTEND_DIR, TRAINING_DATA_DIR,
 ]:
     directory.mkdir(parents=True, exist_ok=True)
 
