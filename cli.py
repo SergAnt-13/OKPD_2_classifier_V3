@@ -4,6 +4,7 @@
 import argparse
 import sys
 from pathlib import Path
+import os
 
 ROOT_DIR = Path(__file__).resolve().parent
 if str(ROOT_DIR) not in sys.path:
@@ -14,6 +15,8 @@ from backend.preprocessing.cleaner import TextCleaner
 from backend.preprocessing.stemmer import get_stemmer
 from backend.models.retriever import Retriever, build_faiss_index
 
+os.environ["HF_HUB_OFFLINE"] = "1"
+os.environ["TRANSFORMERS_OFFLINE"] = "1"
 
 def cmd_predict_text(args):
     cleaner = TextCleaner(abbreviations_path=REFERENCE_DIR / "сокращения.xlsx")
@@ -21,7 +24,7 @@ def cmd_predict_text(args):
     text = args.text
     text_stemmed = cleaner.clean(text, stemmer=stemmer)
 
-    retriever = Retriever(model_name="BAAI/bge-m3")
+    retriever = Retriever(model_name=args.model)
     result = retriever.search(text_stemmed, top_k=5)
 
     print(f"Запрос: {text}")

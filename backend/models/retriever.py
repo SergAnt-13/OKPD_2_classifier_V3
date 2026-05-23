@@ -30,7 +30,7 @@ def get_device() -> str:
 class Retriever:
     def __init__(
         self,
-        model_name: str = "BAAI/bge-m3",
+        model_name: str = "artifacts/models/bge-m3-finetuned",
         index_path: Optional[Path] = None,
         id_map_path: Optional[Path] = None,
         reranker_model: str = "BAAI/bge-reranker-v2-m3",

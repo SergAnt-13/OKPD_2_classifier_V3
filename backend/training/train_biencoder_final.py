@@ -1,9 +1,9 @@
-# backend/training/train_biencoder_overnight.py
-# Purpose: Дообучение BGE-M3 на полных данных (экспертная выборка + промышленная разметка)
-# с взвешенными примерами и принудительным CPU (для Mac M1 Pro).
+# backend/training/train_biencoder_final.py
 import os
-os.environ["PYTORCH_MPS_HIGH_WATERMARK_RATIO"] = "0.0"  # отключаем лимит MPS
-os.environ["CUDA_VISIBLE_DEVICES"] = ""                # отключаем CUDA
+os.environ["PYTORCH_MPS_HIGH_WATERMARK_RATIO"] = "0.0"
+os.environ["CUDA_VISIBLE_DEVICES"] = ""
+os.environ["HF_HUB_OFFLINE"] = "1"
+os.environ["TRANSFORMERS_OFFLINE"] = "1"
 
 import sys
 from pathlib import Path
@@ -13,35 +13,33 @@ if str(ROOT) not in sys.path:
 
 import pandas as pd
 import torch
-torch.set_default_device("cpu")                         # глобально CPU
 from tqdm import tqdm
 from sklearn.model_selection import train_test_split
 from sentence_transformers import SentenceTransformer, InputExample
 from sentence_transformers.sentence_transformer.losses import MultipleNegativesRankingLoss
 from config.settings import REFERENCE_DIR, TRAINING_DATA_DIR, RAW_DATA_DIR
+from backend.preprocessing.cleaner import TextCleaner
+from backend.preprocessing.stemmer import get_stemmer
 
-# 1. Загружаем данные
+torch.set_default_device("cpu")
+
+# 1. ЗАГРУЗКА ДАННЫХ
 gold = pd.read_excel(TRAINING_DATA_DIR / "train.xlsx", dtype=str)
 gold = gold[["Номенклатура", "Код ОКПД2"]].dropna()
 gold.columns = ["text", "code"]
-gold["source"] = "expert"
 
 prom = pd.read_excel(RAW_DATA_DIR / "all_nomenclature.xlsx", dtype=str)
 prom = prom[['nomenclature', 'okpd2_code']].dropna()
 prom.columns = ["text", "code"]
-prom["source"] = "industrial"
 
 all_data = pd.concat([gold, prom], ignore_index=True)
-print(f"Экспертных: {len(gold)}, Промышленных: {len(prom)}")
+print(f"Экспертных: {len(gold)}, Промышленных: {len(prom)}, Всего: {len(all_data)}")
 
-# 2. Загружаем справочник ОКПД-2
+# 2. СПРАВОЧНИК ОКПД-2
 okpd = pd.read_excel(REFERENCE_DIR / "okpd_2.xlsx", dtype=str)
 code_to_name = dict(zip(okpd["code"], okpd["name"]))
 
-# 3. Очистка текста и построение пар (text → code_name)
-from backend.preprocessing.cleaner import TextCleaner
-from backend.preprocessing.stemmer import get_stemmer
-
+# 3. ПОСТРОЕНИЕ ПАР
 cleaner = TextCleaner(abbreviations_path=REFERENCE_DIR / "сокращения.xlsx")
 stemmer = get_stemmer()
 
@@ -54,31 +52,26 @@ for _, row in tqdm(all_data.iterrows(), total=len(all_data), desc="Подгот�
 
 print(f"Построено пар: {len(pairs)}")
 
-# 4. Загружаем модель на CPU
-model = SentenceTransformer("BAAI/bge-m3", device="cpu")
-model.to("cpu")  # явно перемещаем на CPU
+# 4. МОДЕЛЬ
+model = SentenceTransformer("artifacts/models/bge-m3-finetuned", device="cpu")
+model.to("cpu")
 
-# 5. Разделяем на train/eval
+# 5. TRAIN / EVAL SPLIT
 train_pairs, eval_pairs = train_test_split(pairs, test_size=0.1, random_state=42)
 train_examples = [InputExample(texts=[p[0], p[1]]) for p in train_pairs]
 
-# 6. DataLoader с pin_memory=False (обязательно для MPS/CPU)
 train_dataloader = torch.utils.data.DataLoader(
-    train_examples,
-    shuffle=True,
-    batch_size=8,
-    pin_memory=False
+    train_examples, shuffle=True, batch_size=4, pin_memory=False
 )
-
-# 7. Функция потерь и обучение
 train_loss = MultipleNegativesRankingLoss(model)
 
+# 6. ОБУЧЕНИЕ
 model.fit(
     train_objectives=[(train_dataloader, train_loss)],
     epochs=1,
     warmup_steps=100,
-    output_path="artifacts/models/bge-m3-finetuned",
+    output_path="artifacts/models/bge-m3-finetuned-v2",
     show_progress_bar=True,
 )
 
-print("Дообучение завершено. Модель сохранена в artifacts/models/bge-m3-finetuned.")
+print("Дообучение завершено. Модель сохранена в artifacts/models/bge-m3-finetuned-v2")
