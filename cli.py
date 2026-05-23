@@ -12,7 +12,6 @@ if str(ROOT_DIR) not in sys.path:
 
 from config.settings import REFERENCE_DIR, FAISS_DIR
 from backend.preprocessing.cleaner import TextCleaner
-from backend.preprocessing.stemmer import get_stemmer
 from backend.models.retriever import Retriever, build_faiss_index
 
 os.environ["HF_HUB_OFFLINE"] = "1"
@@ -20,9 +19,8 @@ os.environ["TRANSFORMERS_OFFLINE"] = "1"
 
 def cmd_predict_text(args):
     cleaner = TextCleaner(abbreviations_path=REFERENCE_DIR / "сокращения.xlsx")
-    stemmer = get_stemmer()
     text = args.text
-    text_stemmed = cleaner.clean(text, stemmer=stemmer)
+    text_stemmed = cleaner.clean(text, use_stemmer=True)
 
     retriever = Retriever(model_name=args.model)
     result = retriever.search(text_stemmed, top_k=5)

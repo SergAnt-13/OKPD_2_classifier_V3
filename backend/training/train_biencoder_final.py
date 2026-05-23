@@ -19,7 +19,6 @@ from sentence_transformers import SentenceTransformer, InputExample
 from sentence_transformers.sentence_transformer.losses import MultipleNegativesRankingLoss
 from config.settings import REFERENCE_DIR, TRAINING_DATA_DIR, RAW_DATA_DIR
 from backend.preprocessing.cleaner import TextCleaner
-from backend.preprocessing.stemmer import get_stemmer
 
 torch.set_default_device("cpu")
 
@@ -45,7 +44,7 @@ stemmer = get_stemmer()
 
 pairs = []
 for _, row in tqdm(all_data.iterrows(), total=len(all_data), desc="Подготовка пар"):
-    text = cleaner.clean(row["text"], stemmer=stemmer)
+    text = cleaner.clean(row["text"], use_stemmer=True)
     target = code_to_name.get(row["code"].strip())
     if text and target:
         pairs.append((text, target))

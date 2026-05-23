@@ -1,24 +1,11 @@
 # backend/preprocessing/cleaner.py
-# Purpose: Text preprocessing — abbreviation expansion, normalization, optional stemming.
-
 import re
 from pathlib import Path
 from typing import Optional, Dict
-
 import pandas as pd
-
+from nltk.stem.snowball import SnowballStemmer
 
 class TextCleaner:
-    """
-    Preprocesses product names:
-    - expands abbreviations
-    - removes GOST/TU/STO patterns
-    - lowercases
-    - removes punctuation
-    - removes leading digits
-    - normalizes whitespace
-    """
-
     GOST_PATTERNS = [
         re.compile(r"\bгост\b\s*[\d\-]+", re.IGNORECASE),
         re.compile(r"\bту\b\s*[\d\-]+", re.IGNORECASE),
@@ -27,6 +14,9 @@ class TextCleaner:
 
     def __init__(self, abbreviations_path: Optional[Path] = None):
         self.abbreviations: Dict[str, str] = {}
+        # Единая точка для стемминга – можно заменить на другой стеммер,
+        # и это автоматически отразится во всех вызовах clean(…, use_stemmer=True)
+        self.stemmer = SnowballStemmer("russian")
         if abbreviations_path and Path(abbreviations_path).exists():
             df = pd.read_excel(abbreviations_path, dtype=str)
             if "abbr" in df.columns and "expansion" in df.columns:
@@ -61,11 +51,11 @@ class TextCleaner:
                 result.append(token)
         return " ".join(result)
 
-    def clean(self, text: Optional[str], stemmer=None) -> str:
+    def clean(self, text: Optional[str], use_stemmer: bool = False) -> str:
         """
-        Main cleaning pipeline.
-        If stemmer is provided, applies stemming (for retrieval / training).
-        Otherwise returns full forms (for NER, cross-encoder, UI output).
+        Основной конвейер очистки.
+        use_stemmer=True – для retrieval и построения FAISS-индекса.
+        use_stemmer=False – для NER, кросс-энкодера, UI.
         """
         if not text:
             return ""
@@ -79,7 +69,7 @@ class TextCleaner:
         text = re.sub(r"^\d+\s+", "", text)
         text = re.sub(r"\s+", " ", text).strip()
 
-        if stemmer:
-            text = " ".join(stemmer.stem(w) for w in text.split())
+        if use_stemmer:
+            text = " ".join(self.stemmer.stem(w) for w in text.split())
 
         return text

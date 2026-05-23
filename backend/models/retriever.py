@@ -7,7 +7,6 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 from typing import Dict, Optional
-from backend.preprocessing.stemmer import get_stemmer
 from backend.models.gli_scorer import GLiScorer
 
 
@@ -71,9 +70,14 @@ class Retriever:
 
     def search(self, query: str, top_k: int = 5) -> Dict:
         self._lazy_load()
-        embedding = self.model.encode([query], convert_to_numpy=True, show_progress_bar=False)
+        # Стемминг теперь внутри cleaner.clean(…, use_stemmer=True)
+        query_norm = self.cleaner.clean(query, use_stemmer=True)
+        if not query_norm.strip():
+            return {"candidates": []}
+
+        embedding = self.model.encode([query_norm], convert_to_numpy=True, show_progress_bar=False)
         faiss.normalize_L2(embedding)
-        scores, indices = self.index.search(embedding, top_k * 4)  # больше кандидатов для реранка
+        scores, indices = self.index.search(embedding, top_k * 4)
 
         candidates = []
         for score, idx in zip(scores[0], indices[0]):
@@ -85,9 +89,6 @@ class Retriever:
                     "name": self.names[idx],
                 })
 
-        if self.gli:
-            candidates = self.gli.score(query, candidates)
-
         candidates = self.reranker.rerank(query, candidates, top_k=top_k)
         return {"candidates": candidates}
 
@@ -95,35 +96,43 @@ def build_faiss_index(
     reference_path: Optional[Path] = None,
     model_name: str = "BAAI/bge-m3",
     batch_size: int = 32,
+    index_path: Optional[Path] = None,
+    id_map_path: Optional[Path] = None,
 ):
     reference_path = reference_path or REFERENCE_DIR / "okpd_2.xlsx"
     if not reference_path.exists():
         raise FileNotFoundError(f"Reference file not found: {reference_path}")
 
+    # Если пути не переданы, используем значения по умолчанию
+    if index_path is None:
+        index_path = FAISS_DIR / "okpd_index.faiss"
+    if id_map_path is None:
+        id_map_path = FAISS_DIR / "id_map.csv"
+
     df = pd.read_excel(reference_path, dtype=str)
     df = df.dropna(subset=["name"])
     df["name"] = df["name"].astype(str).str.strip()
     df = df[df["name"] != ""]
-
-    # Стеммируем названия кодов (как и запросы)
-    stemmer = get_stemmer()
-    texts = [" ".join(stemmer.stem(w) for w in name.split()) for name in df["name"]]
-
+    texts = df["name"].tolist()
     print(f"Encoding {len(texts)} texts for Dense index...")
+
     model = SentenceTransformer(model_name, device=get_device())
-    embeddings = model.encode(texts, batch_size=batch_size, convert_to_numpy=True, show_progress_bar=True)
+    embeddings = model.encode(
+        texts,
+        batch_size=batch_size,
+        convert_to_numpy=True,
+        show_progress_bar=True,
+    )
     faiss.normalize_L2(embeddings)
 
     dim = embeddings.shape[1]
     index = faiss.IndexFlatIP(dim)
     index.add(embeddings)
 
-    index_path = FAISS_DIR / "okpd_index.faiss"
     faiss.write_index(index, str(index_path))
     print(f"FAISS index saved to {index_path}")
 
     id_map = df[["code", "parent_code", "name"]].copy()
-    id_map_path = FAISS_DIR / "id_map.csv"
     id_map.to_csv(id_map_path, index=False)
     print(f"ID map saved to {id_map_path}")
 

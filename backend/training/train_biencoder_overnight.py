@@ -47,7 +47,7 @@ stemmer = get_stemmer()
 
 pairs = []
 for _, row in tqdm(all_data.iterrows(), total=len(all_data), desc="Подготовка пар"):
-    text = cleaner.clean(row["text"], stemmer=stemmer)
+    text = cleaner.clean(row["text"], use_stemmer=True)
     target = code_to_name.get(row["code"].strip())
     if text and target:
         pairs.append((text, target))

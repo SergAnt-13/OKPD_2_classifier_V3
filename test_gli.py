@@ -12,7 +12,6 @@ import faiss
 from tqdm import tqdm
 from config.settings import REFERENCE_DIR, TRAINING_DATA_DIR
 from backend.preprocessing.cleaner import TextCleaner
-from backend.preprocessing.stemmer import get_stemmer
 from backend.models.retriever import Retriever
 from backend.models.gli_scorer import GLiScorer
 
