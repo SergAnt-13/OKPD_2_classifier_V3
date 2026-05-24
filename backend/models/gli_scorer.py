@@ -1,4 +1,4 @@
-# backend/models/gli_scorer.py
+backend/models/gli_scorer.py
 # Purpose: GLiClass zero-shot scorer for independent semantic evaluation.
 # Uses knowledgator/gliclass-base-v3.0 (DeBERTa-v3-base, 187M params).
 
