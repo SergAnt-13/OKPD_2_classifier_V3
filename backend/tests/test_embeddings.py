@@ -4,7 +4,7 @@ import numpy as np
 
 text = "конфеты шоколадные"
 base = SentenceTransformer("BAAI/bge-m3", device="cpu")
-ft   = SentenceTransformer("artifacts/models/bge-m3-finetuned", device="cpu")
+ft   = SentenceTransformer("../../artifacts/models/bge-m3-finetuned", device="cpu")
 
 emb_base = base.encode([text])
 emb_ft   = ft.encode([text])

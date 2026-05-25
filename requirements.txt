@@ -1,3 +1,4 @@
+accelerate==1.13.0
 aiohappyeyeballs==2.6.2
 aiohttp==3.13.5
 aiosignal==1.4.0
@@ -49,11 +50,15 @@ multiprocess==0.70.19
 networkx==3.6.1
 nltk==3.9.4
 numpy==2.4.6
+numpy-typing-compat==20251206.2.4
 openpyxl==3.1.5
+optype==0.17.1
 packaging==26.2
 pandas==3.0.3
+pd==0.0.4
 pika==1.4.0
 propcache==0.5.2
+psutil==7.2.2
 pyarrow==24.0.0
 pyasn1==0.6.3
 pyasn1_modules==0.4.2
@@ -74,6 +79,7 @@ rpds-py==0.30.0
 safetensors==0.7.0
 scikit-learn==1.8.0
 scipy==1.17.1
+scipy-stubs==1.17.1.4
 sentence-transformers==5.5.1
 service-identity==24.2.0
 shellingham==1.5.4

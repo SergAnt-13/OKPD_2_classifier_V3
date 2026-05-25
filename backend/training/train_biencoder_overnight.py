@@ -40,10 +40,9 @@ code_to_name = dict(zip(okpd["code"], okpd["name"]))
 
 # 3. Очистка текста и построение пар (text → code_name)
 from backend.preprocessing.cleaner import TextCleaner
-from backend.preprocessing.stemmer import get_stemmer
 
 cleaner = TextCleaner(abbreviations_path=REFERENCE_DIR / "сокращения.xlsx")
-stemmer = get_stemmer()
+
 
 pairs = []
 for _, row in tqdm(all_data.iterrows(), total=len(all_data), desc="Подготовка пар"):

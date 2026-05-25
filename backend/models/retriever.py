@@ -8,7 +8,7 @@ import pandas as pd
 from pathlib import Path
 from typing import Dict, Optional
 from backend.models.gli_scorer import GLiScorer
-
+from backend.preprocessing.cleaner import TextCleaner
 
 import torch
 from sentence_transformers import SentenceTransformer
@@ -28,12 +28,12 @@ def get_device() -> str:
 
 class Retriever:
     def __init__(
-        self,
-        model_name: str = "artifacts/models/bge-m3-finetuned",
-        index_path: Optional[Path] = None,
-        id_map_path: Optional[Path] = None,
-        reranker_model: str = "BAAI/bge-reranker-v2-m3",
-        use_gli: bool = False,
+            self,
+            model_name: str = "artifacts/models/bge-m3-finetuned",
+            index_path: Optional[Path] = None,
+            id_map_path: Optional[Path] = None,
+            reranker_model: str = "BAAI/bge-reranker-v2-m3",
+            use_gli: bool = False,
     ):
         # Ленивая загрузка энкодера
         if model_name not in _MODEL_CACHE:
@@ -52,6 +52,8 @@ class Retriever:
         self.codes = None
         self.parent_codes = None
         self.names = None
+        self.gli = GLiScorer() if use_gli else None
+        self.cleaner = TextCleaner(abbreviations_path=REFERENCE_DIR / "сокращения.xlsx")
         self.gli = GLiScorer() if use_gli else None
 
     def _lazy_load(self):
