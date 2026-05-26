@@ -10,7 +10,7 @@ os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 import pandas as pd
 import numpy as np
 import torch
-torch.cuda.set_device(0)  # принудительно выбрать первую видеокарту
+torch.cuda.set_device(0)
 print(f"Используется устройство: {torch.cuda.get_device_name(0)}")
 from tqdm import tqdm
 from sentence_transformers import CrossEncoder
@@ -26,58 +26,75 @@ print(f"Золотая выборка: {len(gold)} примеров")
 
 cleaner = TextCleaner(abbreviations_path=REFERENCE_DIR / "сокращения.xlsx")
 
-# ---------- 2. Модели ----------
-# Dense retriever (чемпион)
+# ---------- 2. Основной retriever ----------
 ret = Retriever(
-    model_name="artifacts/models/bge-m3-frozen-stratified-epoch2",
+    model_name="artifacts/models/bge-m3-frozen-3epoch",
     index_path=FAISS_DIR / "okpd_index.faiss",
     id_map_path=FAISS_DIR / "id_map.csv",
 )
 
-reranker_old = CrossEncoder("BAAI/bge-reranker-v2-m3", max_length=512, device="cuda")
-reranker_old.model.to("cuda")
-print("Старый реранкер на:", next(reranker_old.model.parameters()).device)
-
-reranker_new = CrossEncoder("artifacts/models/reranker-final", max_length=512, device="cuda")
-reranker_new.model.to("cuda")
-print("Новый реранкер на:", next(reranker_new.model.parameters()).device)
-
-# ---------- 3. Функция оценки ----------
-def evaluate_with_reranker(name, queries_df, reranker=None):
+# ---------- 3. Функция оценки с батчевым реранкером ----------
+def evaluate_with_reranker(name, queries_df, retriever, reranker=None, use_reranker=False):
     hits = {1:0, 3:0, 5:0, 10:0}
     ndcg_sum = 0.0
-    for _, row in tqdm(queries_df.iterrows(), total=len(queries_df), desc=name):
-        q = cleaner.clean(row["text"], use_stemmer=True)
-        # Получаем топ-20 от dense
-        raw = ret.search(q, top_k=20)
-        candidates = raw["candidates"]
+    total = len(queries_df)
 
-        if reranker:
-            pairs = [(c["name"], q) for c in candidates]
-            scores = reranker.predict(pairs, show_progress_bar=False)
-            for c, s in zip(candidates, scores):
-                c["rerank_score"] = float(s)
+    # Шаг 1: получаем кандидатов для всех запросов (dense retrieval)
+    cleaned_queries = []
+    all_candidates = []
+    true_codes = []
+    for _, row in tqdm(queries_df.iterrows(), total=total, desc=f"{name} (dense)"):
+        q = cleaner.clean(row["text"], use_lemmatizer=True)
+        raw = retriever.search(q, top_k=10, use_reranker=use_reranker)
+        cleaned_queries.append(q)
+        all_candidates.append(raw["candidates"][:15])
+        true_codes.append(row["true_code"])
+
+    # # Шаг 2: если есть внешний реранкер, применяем его ко всем парам за один проход
+    if reranker:
+        all_pairs = []
+        for q, candidates in zip(cleaned_queries, all_candidates):
+            for c in candidates:
+                all_pairs.append((c["name"], q))
+
+        print(f"Переранжирование {len(all_pairs)} пар...")
+        scores = reranker.predict(all_pairs, batch_size=16, show_progress_bar=True, max_length=256)
+        idx = 0
+        for candidates in all_candidates:
+            for c in candidates:
+                c["rerank_score"] = float(scores[idx])
+                idx += 1
             candidates.sort(key=lambda x: x.get("rerank_score", 0), reverse=True)
 
+    # Шаг 3: считаем метрики
+    for true_code, candidates in zip(true_codes, all_candidates):
         for i, c in enumerate(candidates[:10], 1):
-            if c["code"] == row["true_code"]:
+            if c["code"] == true_code:
                 for k in hits:
                     if i <= k:
                         hits[k] += 1
                 ndcg_sum += 1.0 / np.log2(i + 1)
                 break
-    total = len(queries_df)
+
     return {k: hits[k]/total for k in hits}, ndcg_sum/total
 
 # ---------- 4. Запуск ----------
 print("\n=== Dense only ===")
-dense_metrics, dense_ndcg = evaluate_with_reranker("Dense only", gold)
+dense_metrics, dense_ndcg = evaluate_with_reranker("Dense only", gold, ret, use_reranker=False)
 
-print("\n=== Dense + OLD Reranker ===")
-old_metrics, old_ndcg = evaluate_with_reranker("OLD Reranker", gold, reranker_old)
+# print("\n=== Dense + OLD Reranker ===")
+# reranker_old = CrossEncoder("BAAI/bge-reranker-v2-m3", max_length=256, device="cuda")
+# reranker_old.model.to("cuda")
+# old_metrics, old_ndcg = evaluate_with_reranker("OLD Reranker", gold, ret, reranker=reranker_old, use_reranker=False)
+# del reranker_old
+# torch.cuda.empty_cache()
 
 print("\n=== Dense + NEW Reranker ===")
-new_metrics, new_ndcg = evaluate_with_reranker("NEW Reranker", gold, reranker_new)
+reranker_new = CrossEncoder("artifacts/models/reranker-final", max_length=256, device="cuda")
+reranker_new.model.to("cuda")
+new_metrics, new_ndcg = evaluate_with_reranker("NEW Reranker", gold, ret, reranker=reranker_new, use_reranker=False)
+del reranker_new
+torch.cuda.empty_cache()
 
 # ---------- 5. Итоговая таблица ----------
 print("\n" + "="*70)

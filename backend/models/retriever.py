@@ -70,9 +70,8 @@ class Retriever:
         self.names = id_map["name"].values
         self._loaded = True
 
-    def search(self, query: str, top_k: int = 5) -> Dict:
+    def search(self, query: str, top_k: int = 5, use_reranker: bool = True) -> Dict:
         self._lazy_load()
-        # Стемминг теперь внутри cleaner.clean(…, use_stemmer=True)
         query_norm = self.cleaner.clean(query, use_stemmer=True)
         if not query_norm.strip():
             return {"candidates": []}
@@ -91,7 +90,25 @@ class Retriever:
                     "name": self.names[idx],
                 })
 
-        candidates = self.reranker.rerank(query, candidates, top_k=top_k)
+        if use_reranker:
+            candidates = self.reranker.rerank(query, candidates, top_k=top_k)
+        return {"candidates": candidates}
+
+        embedding = self.model.encode([query_norm], convert_to_numpy=True, show_progress_bar=False)
+        faiss.normalize_L2(embedding)
+        scores, indices = self.index.search(embedding, top_k * 4)
+
+        candidates = []
+        for score, idx in zip(scores[0], indices[0]):
+            if 0 <= idx < len(self.codes):
+                candidates.append({
+                    "code": self.codes[idx],
+                    "parent_code": self.parent_codes[idx],
+                    "score": float(score),
+                    "name": self.names[idx],
+                })
+
+        #candidates = self.reranker.rerank(query, candidates, top_k=top_k)
         return {"candidates": candidates}
 
 def build_faiss_index(
