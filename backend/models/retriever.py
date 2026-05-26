@@ -1,23 +1,22 @@
 # backend/models/retriever.py
-# Purpose: Dense retrieval + Cross-Encoder reranking.
-# Uses BAAI/bge-m3 for retrieval and BAAI/bge-reranker-v2-m3 for reranking.
+# Purpose: Dense retrieval with optional lazy reranking.
 
-import faiss
-import numpy as np
-import pandas as pd
 from pathlib import Path
 from typing import Dict, Optional
-from backend.models.gli_scorer import GLiScorer
-from backend.preprocessing.cleaner import TextCleaner
 
+import faiss
+import pandas as pd
 import torch
 from sentence_transformers import SentenceTransformer
+
+from backend.models.gli_scorer import GLiScorer
 from backend.models.reranker import Reranker
+from backend.preprocessing.cleaner import TextCleaner
 from config.settings import FAISS_DIR, REFERENCE_DIR
 
-# Глобальный кэш для моделей (ленивая загрузка)
-_MODEL_CACHE = {}
-_RERANKER_CACHE = {}
+_MODEL_CACHE: dict[str, SentenceTransformer] = {}
+_RERANKER_CACHE: dict[str, Reranker] = {}
+
 
 def get_device() -> str:
     if torch.cuda.is_available():
@@ -26,24 +25,30 @@ def get_device() -> str:
         return "mps"
     return "cpu"
 
+
+def resolve_reference_path(*candidates: str) -> Path:
+    for candidate in candidates:
+        path = REFERENCE_DIR / candidate
+        if path.exists():
+            return path
+    raise FileNotFoundError(f"Reference file not found. Tried: {candidates}")
+
+
 class Retriever:
     def __init__(
-            self,
-            model_name: str = "artifacts/models/bge-m3-finetuned",
-            index_path: Optional[Path] = None,
-            id_map_path: Optional[Path] = None,
-            reranker_model: str = "BAAI/bge-reranker-v2-m3",
-            use_gli: bool = False,
+        self,
+        model_name: str = "artifacts/models/bge-m3-finetuned",
+        index_path: Optional[Path] = None,
+        id_map_path: Optional[Path] = None,
+        reranker_model: str = "BAAI/bge-reranker-v2-m3",
+        use_gli: bool = False,
     ):
-        # Ленивая загрузка энкодера
         if model_name not in _MODEL_CACHE:
             _MODEL_CACHE[model_name] = SentenceTransformer(model_name, device=get_device())
         self.model = _MODEL_CACHE[model_name]
 
-        # Ленивая загрузка реранкера
-        if reranker_model not in _RERANKER_CACHE:
-            _RERANKER_CACHE[reranker_model] = Reranker(reranker_model)
-        self.reranker = _RERANKER_CACHE[reranker_model]
+        self.reranker_model = reranker_model
+        self.reranker: Reranker | None = None
 
         self.index_path = index_path or FAISS_DIR / "okpd_index.faiss"
         self.id_map_path = id_map_path or FAISS_DIR / "id_map.csv"
@@ -53,22 +58,38 @@ class Retriever:
         self.parent_codes = None
         self.names = None
         self.gli = GLiScorer() if use_gli else None
-        self.cleaner = TextCleaner(abbreviations_path=REFERENCE_DIR / "сокращения.xlsx")
-        self.gli = GLiScorer() if use_gli else None
+        self.cleaner = TextCleaner(
+            abbreviations_path=resolve_reference_path("сокращения.xlsx", "Сокращения.xlsx")
+        )
 
-    def _lazy_load(self):
+    def _lazy_load(self) -> None:
         if self._loaded:
             return
         if not self.index_path.exists():
             raise FileNotFoundError(f"FAISS index not found: {self.index_path}")
         if not self.id_map_path.exists():
             raise FileNotFoundError(f"ID map not found: {self.id_map_path}")
+
         self.index = faiss.read_index(str(self.index_path))
         id_map = pd.read_csv(self.id_map_path, dtype=str)
         self.codes = id_map["code"].values
         self.parent_codes = id_map.get("parent_code", id_map["code"]).values
         self.names = id_map["name"].values
         self._loaded = True
+
+    def _get_reranker(self) -> Reranker:
+        if self.reranker is not None:
+            return self.reranker
+
+        if self.reranker_model not in _RERANKER_CACHE:
+            local_only = not Path(self.reranker_model).exists()
+            _RERANKER_CACHE[self.reranker_model] = Reranker(
+                self.reranker_model,
+                local_files_only=local_only,
+            )
+
+        self.reranker = _RERANKER_CACHE[self.reranker_model]
+        return self.reranker
 
     def search(self, query: str, top_k: int = 5, use_reranker: bool = True) -> Dict:
         self._lazy_load()
@@ -83,33 +104,20 @@ class Retriever:
         candidates = []
         for score, idx in zip(scores[0], indices[0]):
             if 0 <= idx < len(self.codes):
-                candidates.append({
-                    "code": self.codes[idx],
-                    "parent_code": self.parent_codes[idx],
-                    "score": float(score),
-                    "name": self.names[idx],
-                })
+                candidates.append(
+                    {
+                        "code": self.codes[idx],
+                        "parent_code": self.parent_codes[idx],
+                        "score": float(score),
+                        "name": self.names[idx],
+                    }
+                )
 
         if use_reranker:
-            candidates = self.reranker.rerank(query, candidates, top_k=top_k)
+            candidates = self._get_reranker().rerank(query, candidates, top_k=top_k)
+
         return {"candidates": candidates}
 
-        embedding = self.model.encode([query_norm], convert_to_numpy=True, show_progress_bar=False)
-        faiss.normalize_L2(embedding)
-        scores, indices = self.index.search(embedding, top_k * 4)
-
-        candidates = []
-        for score, idx in zip(scores[0], indices[0]):
-            if 0 <= idx < len(self.codes):
-                candidates.append({
-                    "code": self.codes[idx],
-                    "parent_code": self.parent_codes[idx],
-                    "score": float(score),
-                    "name": self.names[idx],
-                })
-
-        #candidates = self.reranker.rerank(query, candidates, top_k=top_k)
-        return {"candidates": candidates}
 
 def build_faiss_index(
     reference_path: Optional[Path] = None,
@@ -122,7 +130,6 @@ def build_faiss_index(
     if not reference_path.exists():
         raise FileNotFoundError(f"Reference file not found: {reference_path}")
 
-    # Если пути не переданы, используем значения по умолчанию
     if index_path is None:
         index_path = FAISS_DIR / "okpd_index.faiss"
     if id_map_path is None:
@@ -155,8 +162,10 @@ def build_faiss_index(
     id_map.to_csv(id_map_path, index=False)
     print(f"ID map saved to {id_map_path}")
 
+
 if __name__ == "__main__":
     import argparse
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", default="BAAI/bge-m3")
     args = parser.parse_args()
