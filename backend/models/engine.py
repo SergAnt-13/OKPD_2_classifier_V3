@@ -78,7 +78,7 @@ class DecisionEngine:
             return False
         return True
 
-    def predict(self, query: str, top_k: int = 10, use_reranker: bool = False) -> Dict:
+    def predict(self, query: str, top_k: int = 10, use_reranker: bool = False, use_classifier: bool = True) -> Dict:
         # 1. retrieval
         if use_reranker and self.reranker is not None:
             raw = self.retriever.search(query, top_k=top_k, use_reranker=False)
@@ -113,7 +113,7 @@ class DecisionEngine:
         # 2. Классификатор (только если код в его списке)
         classifier_prob = None
         classifier_code = None
-        if self.classifier_path:
+        if use_classifier and self.classifier_path:
             self._load_classifier()
             if self.classifier and self.classifier_labels and top1["code"] in self.classifier_labels:
                 inputs = self.classifier_tokenizer(query, return_tensors="pt", truncation=True, max_length=256)

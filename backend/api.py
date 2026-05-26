@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
+import numpy as np
 import pandas as pd
 from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -32,6 +33,7 @@ DEFAULT_CODE_COLUMNS = ("Код ОКПД2", "Код ОКПД 2", "OKPD2", "code"
 class PredictRequest(BaseModel):
     query: str = Field(..., min_length=1)
     use_reranker: bool = False
+    use_classifier: bool = True
 
 
 class BatchJsonItem(BaseModel):
@@ -42,6 +44,7 @@ class BatchJsonItem(BaseModel):
 class BatchJsonRequest(BaseModel):
     items: list[BatchJsonItem]
     use_reranker: bool = False
+    use_classifier: bool = True
 
 
 class ExportRow(BaseModel):
@@ -69,6 +72,7 @@ class BatchJob:
     job_id: str
     filename: str
     use_reranker: bool = False
+    use_classifier: bool = True
     status: str = "pending"
     progress: float = 0.0
     created_at: float = field(default_factory=time.time)
@@ -128,6 +132,20 @@ def normalize_text(value: Any) -> str:
     if isinstance(value, float) and pd.isna(value):
         return ""
     return str(value).replace("\xa0", " ").strip()
+
+
+def to_plain_python(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {key: to_plain_python(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [to_plain_python(item) for item in value]
+    if isinstance(value, tuple):
+        return [to_plain_python(item) for item in value]
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    return value
 
 
 def normalize_code(code: Any) -> str:
@@ -201,6 +219,7 @@ def get_vat_info(code: str) -> dict[str, Any]:
 
 def enrich_prediction(result: dict[str, Any], current_code: str | None = None) -> dict[str, Any]:
     predicted_code = normalize_code(result.get("predicted_code"))
+    raw_candidates = result.get("top_candidates", [])
     vat_info = get_vat_info(predicted_code) if predicted_code else {
         "vat_rate": None,
         "vat_exempt": False,
@@ -222,15 +241,34 @@ def enrich_prediction(result: dict[str, Any], current_code: str | None = None) -
     if predicted_code:
         source_name = state.code_to_name.get(predicted_code)
 
-    return {
+    enriched_candidates = []
+    for candidate in raw_candidates:
+        candidate_code = normalize_code(candidate.get("code"))
+        candidate_vat = get_vat_info(candidate_code) if candidate_code else {
+            "vat_rate": None,
+            "vat_exempt": False,
+            "closest_exempt_code": None,
+            "closest_exempt_name": None,
+            "closest_exempt_distance": None,
+        }
+        enriched_candidates.append({
+            **candidate,
+            "code": candidate_code or None,
+            "vat_rate": candidate_vat["vat_rate"],
+            "vat_exempt": candidate_vat["vat_exempt"],
+        })
+
+    enriched = {
         **result,
         "predicted_code": predicted_code or None,
         "predicted_name": source_name,
         "current_code": normalized_current or None,
         "code_match": code_match,
         "vat_mismatch": vat_mismatch,
+        "top_candidates": enriched_candidates,
         **vat_info,
     }
+    return to_plain_python(enriched)
 
 
 def dataframe_to_excel_bytes(df: pd.DataFrame) -> bytes:
@@ -353,9 +391,19 @@ def ensure_initialized(wait: bool = True) -> DecisionEngine:
     return state.engine
 
 
-def run_prediction(query: str, use_reranker: bool, current_code: str | None = None) -> dict[str, Any]:
+def run_prediction(
+    query: str,
+    use_reranker: bool,
+    current_code: str | None = None,
+    use_classifier: bool = True,
+) -> dict[str, Any]:
     engine = ensure_initialized(wait=True)
-    result = engine.predict(query=query, top_k=10, use_reranker=use_reranker)
+    result = engine.predict(
+        query=query,
+        top_k=10,
+        use_reranker=use_reranker,
+        use_classifier=use_classifier,
+    )
     return enrich_prediction(result, current_code=current_code)
 
 
@@ -424,8 +472,13 @@ def parse_batch_json(payload: BatchJsonRequest) -> list[dict[str, Any]]:
     return [{"query": item.query, "current_code": normalize_code(item.current_code)} for item in payload.items]
 
 
-def create_batch_job(filename: str, use_reranker: bool) -> BatchJob:
-    job = BatchJob(job_id=uuid.uuid4().hex, filename=filename, use_reranker=use_reranker)
+def create_batch_job(filename: str, use_reranker: bool, use_classifier: bool) -> BatchJob:
+    job = BatchJob(
+        job_id=uuid.uuid4().hex,
+        filename=filename,
+        use_reranker=use_reranker,
+        use_classifier=use_classifier,
+    )
     job.log(f"Файл '{filename}' принят в обработку.")
     with state.batch_lock:
         state.batch_jobs[job.job_id] = job
@@ -457,7 +510,12 @@ def process_batch_job(job_id: str, batch_items: list[dict[str, Any]]) -> None:
         rows: list[dict[str, Any]] = []
         total = len(batch_items)
         for index, item in enumerate(batch_items, start=1):
-            prediction = run_prediction(item["query"], job.use_reranker, current_code=item.get("current_code"))
+            prediction = run_prediction(
+                item["query"],
+                job.use_reranker,
+                current_code=item.get("current_code"),
+                use_classifier=job.use_classifier,
+            )
             rows.append({
                 "source_name": item["query"],
                 "predicted_code": prediction.get("predicted_code"),
@@ -482,7 +540,7 @@ def process_batch_job(job_id: str, batch_items: list[dict[str, Any]]) -> None:
             if index <= 5 or index == total or index % max(1, total // 10) == 0:
                 job.log(f"Обработано {index} из {total}: {item['query'][:80]}")
 
-        job.rows = rows
+        job.rows = to_plain_python(rows)
         job.status = "completed"
         job.set_progress(1.0)
         job.log(f"Обработка завершена. Готово строк: {len(rows)}.")
@@ -493,8 +551,17 @@ def process_batch_job(job_id: str, batch_items: list[dict[str, Any]]) -> None:
         job.log(f"Ошибка обработки: {exc}")
 
 
-def start_batch_job(batch_items: list[dict[str, Any]], filename: str, use_reranker: bool) -> BatchJob:
-    job = create_batch_job(filename=filename, use_reranker=use_reranker)
+def start_batch_job(
+    batch_items: list[dict[str, Any]],
+    filename: str,
+    use_reranker: bool,
+    use_classifier: bool,
+) -> BatchJob:
+    job = create_batch_job(
+        filename=filename,
+        use_reranker=use_reranker,
+        use_classifier=use_classifier,
+    )
     thread = threading.Thread(
         target=process_batch_job,
         args=(job.job_id, batch_items),
@@ -519,13 +586,14 @@ def get_status() -> dict[str, Any]:
 
 @app.post("/predict")
 def predict(payload: PredictRequest) -> dict[str, Any]:
-    return run_prediction(payload.query, payload.use_reranker)
+    return run_prediction(payload.query, payload.use_reranker, use_classifier=payload.use_classifier)
 
 
 @app.post("/batch_predict", response_model=None)
 async def batch_predict(request: Request, file: UploadFile | None = File(default=None)):
     content_type = request.headers.get("content-type", "")
     use_reranker = False
+    use_classifier = True
     rows: list[dict[str, Any]]
     filename = "batch_results.xlsx"
 
@@ -533,6 +601,7 @@ async def batch_predict(request: Request, file: UploadFile | None = File(default
         raw_payload = await request.json()
         payload = BatchJsonRequest.model_validate(raw_payload)
         use_reranker = payload.use_reranker
+        use_classifier = payload.use_classifier
         batch_items = parse_batch_json(payload)
     else:
         if file is None:
@@ -541,13 +610,19 @@ async def batch_predict(request: Request, file: UploadFile | None = File(default
         filename = f"{source_filename.rsplit('.', 1)[0]}_results.xlsx"
         form = await request.form()
         use_reranker = str(form.get("use_reranker", "false")).lower() == "true"
+        use_classifier = str(form.get("use_classifier", "true")).lower() == "true"
 
     if not batch_items:
         raise HTTPException(status_code=400, detail="No valid rows were found for batch processing.")
 
     rows = []
     for item in batch_items:
-        prediction = run_prediction(item["query"], use_reranker, current_code=item.get("current_code"))
+        prediction = run_prediction(
+            item["query"],
+            use_reranker,
+            current_code=item.get("current_code"),
+            use_classifier=use_classifier,
+        )
         rows.append({
             "source_name": item["query"],
             "predicted_code": prediction.get("predicted_code"),
@@ -569,7 +644,7 @@ async def batch_predict(request: Request, file: UploadFile | None = File(default
         })
 
     if "application/json" in content_type:
-        return JSONResponse(content={"rows": rows, "count": len(rows)})
+        return JSONResponse(content=to_plain_python({"rows": rows, "count": len(rows)}))
 
     export_df = batch_dataframe_from_rows(rows)
     excel_bytes = dataframe_to_excel_bytes(export_df)
@@ -585,10 +660,16 @@ async def batch_predict(request: Request, file: UploadFile | None = File(default
 async def batch_job_upload(request: Request, file: UploadFile = File(...)) -> dict[str, Any]:
     form = await request.form()
     use_reranker = str(form.get("use_reranker", "false")).lower() == "true"
+    use_classifier = str(form.get("use_classifier", "true")).lower() == "true"
     batch_items, source_filename = parse_batch_file(file)
     if not batch_items:
         raise HTTPException(status_code=400, detail="No valid rows were found for batch processing.")
-    job = start_batch_job(batch_items=batch_items, filename=source_filename, use_reranker=use_reranker)
+    job = start_batch_job(
+        batch_items=batch_items,
+        filename=source_filename,
+        use_reranker=use_reranker,
+        use_classifier=use_classifier,
+    )
     return {
         "job_id": job.job_id,
         "status": job.status,
@@ -619,7 +700,7 @@ def batch_job_results(job_id: str) -> dict[str, Any]:
     job = get_batch_job_or_404(job_id)
     if job.status != "completed":
         raise HTTPException(status_code=409, detail="Batch job is not completed yet.")
-    return {"rows": job.rows, "count": len(job.rows), "filename": job.filename}
+    return to_plain_python({"rows": job.rows, "count": len(job.rows), "filename": job.filename})
 
 
 @app.get("/batch_jobs/{job_id}/export")
@@ -670,7 +751,7 @@ def code_info(code: str) -> dict[str, Any]:
 def reference_codes() -> dict[str, Any]:
     ensure_initialized(wait=True)
     assert state.okpd_df is not None
-    items = state.okpd_df[["code", "name"]].to_dict(orient="records")
+    items = state.okpd_df[["code", "parent_code", "name"]].to_dict(orient="records")
     return {"items": items, "count": len(items)}
 
 
