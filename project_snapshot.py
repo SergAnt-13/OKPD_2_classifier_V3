@@ -3,8 +3,8 @@ import os
 from pathlib import Path
 
 EXCLUDE_DIRS = {'.git', '__pycache__', '.venv', 'venv', '.idea', '.pytest_cache',
-                'artifacts', 'data', 'runs', 'logs', '.ipynb_checkpoints', 'node_modules'}
-EXCLUDE_FILES = {'.DS_Store', '*.pyc'}
+                'artifacts', 'runs', 'logs', 'node_modules'}
+EXCLUDE_FILES = {'.DS_Store'}
 
 def print_tree(root: Path, prefix: str = ""):
     entries = sorted(root.iterdir(), key=lambda e: (e.is_file(), e.name))
